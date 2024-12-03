@@ -1,4 +1,8 @@
 # src/audio/speech_recognizer.py
+"""
+Bu modül ses tanıma işlemlerini gerçekleştirir. Temel görevi ses dosyasını metne çevirmektir.
+Ses kalitesini artırmak için ön işleme adımları da içerir.
+"""
 
 from vosk import Model, KaldiRecognizer
 import wave
@@ -14,13 +18,20 @@ logging.getLogger('vosk').setLevel(logging.ERROR)
 
 class SpeechRecognizer:
     def __init__(self, model_path="models/vosk-model-small-tr-0.3"):
+        # Model yolunun geçerliliğini kontrol et
         if not os.path.exists(model_path):
             raise Exception(f"Model klasörü '{model_path}' bulunamadı.")
+
         self.model = Model(model_path)
-        self.target_sr = 16000  # Hedef örnekleme hızı
+        self.target_sr = 16000  # Ses tanıma için ideal örnekleme hızı
 
     def preprocess_audio(self, audio_file_path):
-        """Ses dosyasını ön işleme ve format dönüşümü"""
+        """
+        Ses dosyasını tanıma için optimize eder.
+        - Örnekleme hızını ayarlar
+        - Ses seviyesini normalleştirir
+        - Basit gürültü azaltma uygular
+        """
         try:
             # Ses dosyasını oku
             y, sr = librosa.load(audio_file_path, sr=None)
@@ -35,7 +46,7 @@ class SpeechRecognizer:
             # Gürültü azaltma
             y = self._reduce_noise(y)
 
-            # Geçici WAV dosyası oluştur
+            # İşlenmiş sesi geçici dosyaya kaydet
             temp_path = "temp_processed.wav"
             sf.write(temp_path, y, self.target_sr)
 
@@ -46,22 +57,22 @@ class SpeechRecognizer:
             return audio_file_path
 
     def _reduce_noise(self, audio_data):
-        """Basit gürültü azaltma"""
-        # Sessiz bölgeleri bul
+        """
+        Basit gürültü azaltma işlemi uygular.
+        Sessiz bölgelerdeki gürültü profilini kullanarak sesi temizler.
+        """
         non_silent = librosa.effects.split(audio_data,
                                            top_db=20,
                                            frame_length=2048,
                                            hop_length=512)
 
-        # Sessiz bölgelerin ortalamasını al
         noise_sample = []
         for interval in non_silent:
-            if interval[1] - interval[0] > 2048:  # Minimum uzunluk kontrolü
+            if interval[1] - interval[0] > 2048:
                 noise_sample.extend(audio_data[interval[0]:interval[1]])
 
         if noise_sample:
             noise_profile = np.mean(noise_sample)
-            # Gürültü eşiği üzerindeki sesleri koru
             audio_data = np.where(np.abs(audio_data) > noise_profile * 1.2,
                                   audio_data,
                                   audio_data * 0.1)
@@ -69,26 +80,27 @@ class SpeechRecognizer:
         return audio_data
 
     def transcribe_audio(self, audio_file_path):
-        """Ses dosyasını metne çevir"""
+        """
+        Ses dosyasını metne çevirir.
+        Önce sesi ön işlemeden geçirir, sonra Vosk ile metne çevirir.
+        """
         try:
-            # Ses dosyasını ön işle
             processed_file = self.preprocess_audio(audio_file_path)
 
-            wf = wave.open(processed_file, "rb")
-            recognizer = KaldiRecognizer(self.model, wf.getframerate())
+            with wave.open(processed_file, "rb") as wf:
+                recognizer = KaldiRecognizer(self.model, wf.getframerate())
 
-            text = ""
-            while True:
-                data = wf.readframes(4000)
-                if len(data) == 0:
-                    break
-                if recognizer.AcceptWaveform(data):
-                    result = json.loads(recognizer.Result())
-                    text += result.get("text", "") + " "
+                text = ""
+                while True:
+                    data = wf.readframes(4000)
+                    if len(data) == 0:
+                        break
+                    if recognizer.AcceptWaveform(data):
+                        result = json.loads(recognizer.Result())
+                        text += result.get("text", "") + " "
 
-            # Son kısmı da işle
-            result = json.loads(recognizer.FinalResult())
-            text += result.get("text", "")
+                result = json.loads(recognizer.FinalResult())
+                text += result.get("text", "")
 
             # Geçici dosyayı temizle
             if processed_file != audio_file_path:
